@@ -20,6 +20,7 @@
 
 ## 📢 News
 
+- **2026-04-01** 🐧 Added **NapCat (OneBot11 forward WS)** channel support for unofficial QQ platform integration.
 - **2026-03-16** 🚀 Released **v0.1.4.post5** — a refinement-focused release with stronger reliability and channel support, and a more dependable day-to-day experience. Please see [release notes](https://github.com/HKUDS/nanobot/releases/tag/v0.1.4.post5) for details.
 - **2026-03-15** 🧩 DingTalk rich media, smarter built-in skills, and cleaner model compatibility.
 - **2026-03-14** 💬 Channel plugins, Feishu replies, and steadier MCP, QQ, and media handling.
@@ -243,6 +244,7 @@ Connect nanobot to your favorite chat platform. Want to build your own? See the 
 | **Slack** | Bot token + App-Level token |
 | **Email** | IMAP/SMTP credentials |
 | **QQ** | App ID + App Secret |
+| **NapCat (Unofficial QQ)** | NapCat + OneBot11 Forward WebSocket |
 | **Wecom** | Bot ID + Bot Secret |
 
 <details>
@@ -582,6 +584,50 @@ nanobot gateway
 ```
 
 Now send a message to the bot from QQ — it should respond!
+
+</details>
+
+<details>
+<summary><b>NapCat (Unofficial QQ / OneBot11)</b></summary>
+
+Uses **OneBot11 Forward WebSocket** client mode. This is ideal when you want to connect nanobot to an unofficial QQ ecosystem through NapCat.
+
+**1. Prepare NapCat**
+- Install and run NapCat
+- In NapCat, enable **OneBot11 Forward WebSocket**
+- Record connection settings: host / port / path (and token if enabled)
+
+**2. Configure**
+
+```json
+{
+  "channels": {
+    "napcat": {
+      "enabled": true,
+      "host": "127.0.0.1",
+      "port": 3001,
+      "path": "/onebot/v11/ws",
+      "accessToken": "",
+      "allowFrom": ["*"],
+      "groupPolicy": "mention",
+      "renderMarkdownAsImage": true
+    }
+  }
+}
+```
+
+> - `wsUrl` is optional. If provided, nanobot connects directly to that URL and ignores `host`/`port`/`path`.
+> - `allowFrom`: Use `["*"]` to allow all users, or provide specific QQ IDs as strings.
+> - `groupPolicy`: `"mention"` (default) replies only when mentioned in group chats; `"open"` replies to all group messages.
+> - `renderMarkdownAsImage`: Keep `true` for better rendering of long markdown/code replies in QQ clients.
+
+**3. Run**
+
+```bash
+nanobot gateway
+```
+
+Send a message from your NapCat-connected QQ account, and nanobot should reply.
 
 </details>
 

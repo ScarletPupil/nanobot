@@ -79,6 +79,14 @@ class AgentLoop:
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
+        self._trace_llm = os.getenv("NANOBOT_TRACE_LLM", "0").strip().lower() in {"1", "true", "yes", "on"}
+        self._trace_llm_file = os.getenv("NANOBOT_TRACE_LLM_FILE", "").strip() or None
+        raw_stdout = os.getenv("NANOBOT_TRACE_LLM_STDOUT")
+        self._trace_llm_stdout = (
+            raw_stdout.strip().lower() in {"1", "true", "yes", "on"}
+            if raw_stdout is not None
+            else not bool(self._trace_llm_file)
+        )
 
         self.context = ContextBuilder(workspace)
         self.sessions = session_manager or SessionManager(workspace)
@@ -112,6 +120,56 @@ class AgentLoop:
             get_tool_definitions=self.tools.get_definitions,
         )
         self._register_default_tools()
+
+    @classmethod
+    def _trace_dump(cls, payload: dict[str, Any]) -> str:
+        return json.dumps(payload, ensure_ascii=False, default=str)
+
+    def _emit_trace(self, payload: dict[str, Any]) -> None:
+        text = self._trace_dump(payload)
+        if self._trace_llm_file:
+            try:
+                path = Path(self._trace_llm_file)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("a", encoding="utf-8") as f:
+                    f.write(text + "\n")
+            except Exception as e:
+                logger.warning("Failed to write LLM trace file {}: {}", self._trace_llm_file, e)
+        if self._trace_llm_stdout:
+            logger.info("LLM TRACE {}", text)
+
+    def _trace_llm_request(self, *, iteration: int, messages: list[dict], tool_defs: list[dict]) -> None:
+        if not self._trace_llm:
+            return
+        payload = {
+            "event": "llm_request",
+            "model": self.model,
+            "messages": messages,
+            "tools": tool_defs,
+        }
+        self._emit_trace(payload)
+
+    def _trace_llm_response(self, *, iteration: int, response: Any) -> None:
+        if not self._trace_llm:
+            return
+        payload = {
+            "event": "llm_response",
+            "model": self.model,
+            "finish_reason": response.finish_reason,
+            "content": response.content,
+            "tool_calls": [
+                {
+                    "id": tc.id,
+                    "name": tc.name,
+                    "arguments": tc.arguments,
+                }
+                for tc in response.tool_calls
+            ],
+            "usage": response.usage,
+            "reasoning_content": response.reasoning_content,
+            "thinking_blocks": response.thinking_blocks,
+        }
+        self._emit_trace(payload)
 
     def _register_default_tools(self) -> None:
         """Register the default set of tools."""
@@ -195,12 +253,14 @@ class AgentLoop:
             iteration += 1
 
             tool_defs = self.tools.get_definitions()
+            self._trace_llm_request(iteration=iteration, messages=messages, tool_defs=tool_defs)
 
             response = await self.provider.chat_with_retry(
                 messages=messages,
                 tools=tool_defs,
                 model=self.model,
             )
+            self._trace_llm_response(iteration=iteration, response=response)
 
             if response.has_tool_calls:
                 if on_progress:
@@ -374,7 +434,9 @@ class AgentLoop:
             current_role = "assistant" if msg.sender_id == "subagent" else "user"
             messages = self.context.build_messages(
                 history=history,
-                current_message=msg.content, channel=channel, chat_id=chat_id,
+                current_message=msg.content, 
+                channel=channel, 
+                chat_id=chat_id,
                 current_role=current_role,
             )
             final_content, _, all_msgs = await self._run_agent_loop(messages)

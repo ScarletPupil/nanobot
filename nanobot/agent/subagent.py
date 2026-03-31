@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import uuid
 from pathlib import Path
 from typing import Any
@@ -15,13 +16,14 @@ from nanobot.agent.tools.shell import ExecTool
 from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
-from nanobot.config.schema import ExecToolConfig
+from nanobot.config.schema import ExecToolConfig, WebSearchConfig
 from nanobot.providers.base import LLMProvider
 from nanobot.utils.helpers import build_assistant_message
 
 
 class SubagentManager:
     """Manages background subagent execution."""
+
 
     def __init__(
         self,
@@ -44,8 +46,68 @@ class SubagentManager:
         self.web_proxy = web_proxy
         self.exec_config = exec_config or ExecToolConfig()
         self.restrict_to_workspace = restrict_to_workspace
+        self._trace_llm = os.getenv("NANOBOT_TRACE_LLM", "0").strip().lower() in {"1", "true", "yes", "on"}
+        self._trace_llm_file = os.getenv("NANOBOT_TRACE_LLM_FILE", "").strip() or None
+        raw_stdout = os.getenv("NANOBOT_TRACE_LLM_STDOUT")
+        self._trace_llm_stdout = (
+            raw_stdout.strip().lower() in {"1", "true", "yes", "on"}
+            if raw_stdout is not None
+            else not bool(self._trace_llm_file)
+        )
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
         self._session_tasks: dict[str, set[str]] = {}  # session_key -> {task_id, ...}
+
+    @classmethod
+    def _trace_dump(cls, payload: dict[str, Any]) -> str:
+        return json.dumps(payload, ensure_ascii=False, default=str)
+
+    def _emit_trace(self, payload: dict[str, Any]) -> None:
+        text = self._trace_dump(payload)
+        if self._trace_llm_file:
+            try:
+                path = Path(self._trace_llm_file)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("a", encoding="utf-8") as f:
+                    f.write(text + "\n")
+            except Exception as e:
+                logger.warning("Failed to write LLM trace file {}: {}", self._trace_llm_file, e)
+        if self._trace_llm_stdout:
+            logger.info("LLM TRACE {}", text)
+
+    def _trace_llm_request(self, *, task_id: str, iteration: int, model: str, messages: list[dict], tool_defs: list[dict]) -> None:
+        if not self._trace_llm:
+            return
+        payload = {
+            "event": "subagent_llm_request",
+            "task_id": task_id,
+            "model": model,
+            "messages": messages,
+            "tools": tool_defs,
+        }
+        self._emit_trace(payload)
+
+    def _trace_llm_response(self, *, task_id: str, iteration: int, model: str, response: Any) -> None:
+        if not self._trace_llm:
+            return
+        payload = {
+            "event": "subagent_llm_response",
+            "task_id": task_id,
+            "model": model,
+            "finish_reason": response.finish_reason,
+            "content": response.content,
+            "tool_calls": [
+                {
+                    "id": tc.id,
+                    "name": tc.name,
+                    "arguments": tc.arguments,
+                }
+                for tc in response.tool_calls
+            ],
+            "usage": response.usage,
+            "reasoning_content": response.reasoning_content,
+            "thinking_blocks": response.thinking_blocks,
+        }
+        self._emit_trace(payload)
 
     async def spawn(
         self,
@@ -121,10 +183,25 @@ class SubagentManager:
             while iteration < max_iterations:
                 iteration += 1
 
+                tool_defs = tools.get_definitions()
+                self._trace_llm_request(
+                    task_id=task_id,
+                    iteration=iteration,
+                    model=self.model,
+                    messages=messages,
+                    tool_defs=tool_defs,
+                )
+
                 response = await self.provider.chat_with_retry(
                     messages=messages,
-                    tools=tools.get_definitions(),
+                    tools=tool_defs,
                     model=self.model,
+                )
+                self._trace_llm_response(
+                    task_id=task_id,
+                    iteration=iteration,
+                    model=self.model,
+                    response=response,
                 )
 
                 if response.has_tool_calls:

@@ -252,6 +252,8 @@ class LLMProvider(ABC):
             reasoning_effort=reasoning_effort, tool_choice=tool_choice,
         )
 
+        # logger.debug("chat_with_retry kw={}", kw)
+
         for attempt, delay in enumerate(self._CHAT_RETRY_DELAYS, start=1):
             response = await self._safe_chat(**kw)
 
